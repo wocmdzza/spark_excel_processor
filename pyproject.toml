@@ -1,0 +1,29 @@
+[project]
+name = "spark-excel-processor"
+version = "0.1.0"
+description = "使用 PySpark SQL 操作本地 Excel 文件，让 Excel 数据处理更便捷"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+authors = [
+    {name = "Spark Excel Processor Team"}
+]
+keywords = ["pyspark", "spark", "excel", "sql", "data-processing", "data-analysis"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.3",
+    "pyspark>=4.1.2",
+]
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true

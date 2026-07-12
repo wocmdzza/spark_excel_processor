@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""
+Spark Excel Processor - 主程序入口
+
+使用方法:
+    python main.py [command] [options]
+
+命令:
+    demo        运行演示示例
+    interactive 交互式模式
+    query       执行单个 SQL 查询
+    help        显示帮助信息
+"""
+
+import os
+import sys
+import argparse
+from pathlib import Path
+from datetime import datetime
+
+# 启用 readline 支持，解决方向键显示转义序列的问题
+try:
+    import readline
+except ImportError:
+    pass  # Windows 上可能没有 readline
+
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, str(Path(__file__).parent))
+
+from spark_excel_processor import ExcelProcessor
+
+
+def run_demo():
+    """运行演示示例"""
+    print("运行 Spark Excel Processor 演示...")
+    
+    # 创建示例数据目录
+    data_dir = Path("data")
+    data_dir.mkdir(exist_ok=True)
+    
+    with ExcelProcessor() as processor:
+        print("\n演示完成！")
+        print("提示: 请将您的 Excel 文件放入 'data' 目录中")
+        print("然后使用以下代码:")
+        print("""
+from spark_excel_processor import ExcelProcessor
+
+with ExcelProcessor() as processor:
+    processor.load_excel("data/your_file.xlsx", "Sheet1", "my_data")
+    processor.show("SELECT * FROM my_data LIMIT 10")
+        """)
+
+
+def interactive_mode():
+    """交互式模式"""
+    print("进入交互式模式...")
+    print("输入 'quit' 或 'exit' 退出")
+    print("输入 'help' 查看可用命令")
+    
+    with ExcelProcessor() as processor:
+        loaded_files = []
+        last_query_result = None
+        last_source_file = None
+        
+        while True:
+            try:
+                user_input = input("\n> ").strip()
+                
+                if not user_input:
+                    continue
+                
+                if user_input.lower() in ['quit', 'exit']:
+                    print("退出交互式模式")
+                    break
+                
+                if user_input.lower() == 'help':
+                    print_help()
+                    continue
+                
+                if user_input.lower() == 'status':
+                    print(f"已加载的视图: {processor.get_view_names()}")
+                    continue
+                
+                # 删除视图
+                if user_input.lower().startswith('drop'):
+                    parts = user_input.split()
+                    
+                    # drop all - 删除所有视图
+                    if len(parts) == 2 and parts[1].lower() == 'all':
+                        confirm = input("确认删除所有视图? (y/n): ").strip().lower()
+                        if confirm in ['y', 'yes', '是']:
+                            processor.drop_all_views()
+                        continue
+                    
+                    # drop <view_name> - 删除指定视图
+                    if len(parts) < 2:
+                        print("用法: drop <view_name> 或 drop all")
+                        continue
+                    
+                    view_name = parts[1]
+                    processor.drop_view(view_name)
+                    continue
+                
+                # 导出上一次查询结果
+                if user_input.lower() == 'export':
+                    if last_query_result is None:
+                        print("错误: 没有可导出的查询结果。请先执行 SQL 查询。")
+                        continue
+                    
+                    if last_source_file is None:
+                        print("错误: 无法确定导出路径。请重新加载文件并查询。")
+                        continue
+                    
+                    # 使用缓存的结果直接导出，不需要重新执行 SQL
+                    try:
+                        # 获取导出路径
+                        source_dir = os.path.dirname(os.path.abspath(last_source_file))
+                        default_filename = f"ret_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                        default_path = os.path.join(source_dir, default_filename)
+                        
+                        print(f"\n默认导出路径: {default_path}")
+                        print("（直接回车使用默认路径，或输入自定义路径）")
+                        
+                        custom_path = input("导出路径: ").strip()
+                        
+                        if custom_path:
+                            if os.path.isdir(custom_path):
+                                output_path = os.path.join(custom_path, default_filename)
+                            else:
+                                output_path = custom_path
+                                if not output_path.endswith('.xlsx'):
+                                    output_path += '.xlsx'
+                        else:
+                            output_path = default_path
+                        
+                        # 使用缓存的结果导出
+                        processor.export_to_excel(last_query_result, output_path)
+                    except Exception as e:
+                        print(f"导出失败: {e}")
+                    continue
+                
+                # 尝试作为 SQL 查询执行
+                if user_input.upper().startswith('SELECT') or \
+                   user_input.upper().startswith('WITH') or \
+                   user_input.upper().startswith('SHOW') or \
+                   user_input.upper().startswith('DESCRIBE'):
+                    
+                    if not processor.get_view_names():
+                        print("错误: 没有已加载的数据视图")
+                        print("请先加载 Excel 文件:")
+                        print("  load <file_path> [sheet_name] [view_name]")
+                        continue
+                    
+                    try:
+                        result_df, total_count, is_truncated = processor.preview_query(user_input)
+                        last_query_result = result_df
+                        last_query_sql = user_input
+                    except Exception as e:
+                        print(f"SQL 查询错误: {e}")
+                
+                # 加载 Excel 文件
+                elif user_input.lower().startswith('load'):
+                    parts = user_input.split()
+                    if len(parts) < 2:
+                        print("用法: load <file_path> [sheet_name_or_index] [view_name]")
+                        print("  sheet_name_or_index: 工作表名称或索引（从0开始）")
+                        continue
+                    
+                    file_path = parts[1]
+                    sheet_name_str = parts[2] if len(parts) > 2 else "Sheet1"
+                    view_name = parts[3] if len(parts) > 3 else None
+                    
+                    # 尝试将 sheet_name 解析为整数（索引）
+                    try:
+                        sheet_name = int(sheet_name_str)
+                    except ValueError:
+                        sheet_name = sheet_name_str
+                    
+                    try:
+                        processor.load_excel(file_path, sheet_name, view_name)
+                        loaded_files.append(file_path)
+                        last_source_file = file_path
+                    except Exception as e:
+                        print(f"加载文件错误: {e}")
+                
+                # 查看 Excel 文件的工作表列表
+                elif user_input.lower().startswith('sheets'):
+                    parts = user_input.split()
+                    if len(parts) < 2:
+                        print("用法: sheets <file_path>")
+                        continue
+                    
+                    file_path = parts[1]
+                    try:
+                        sheet_names = processor.get_sheet_names(file_path)
+                        print(f"\n文件 '{file_path}' 的工作表列表:")
+                        for i, name in enumerate(sheet_names):
+                            print(f"  [{i}] {name}")
+                    except Exception as e:
+                        print(f"错误: {e}")
+                
+                else:
+                    print("未知命令。输入 'help' 查看可用命令")
+            
+            except KeyboardInterrupt:
+                print("\n退出交互式模式")
+                break
+            except EOFError:
+                print("\n退出交互式模式")
+                break
+
+
+def print_help():
+    """显示帮助信息"""
+    print("""
+可用命令:
+  load <file_path> [sheet_name_or_index] [view_name]  加载 Excel 文件
+  sheets <file_path>                                   查看 Excel 文件的工作表列表
+  status                                               显示已加载的视图
+  drop <view_name>                                     删除指定视图
+  drop all                                             删除所有视图
+  export                                               导出上一次查询结果
+  help                                                 显示此帮助信息
+  quit/exit                                            退出程序
+
+load 命令说明:
+  file_path: Excel 文件路径
+  sheet_name_or_index: 工作表名称（如 "Sheet1"）或索引（如 0, 1, 2），默认为 "Sheet1"
+  view_name: 自定义视图名称（可选）
+
+示例:
+  load data/sales.xlsx                    # 加载默认工作表 "Sheet1"
+  load data/sales.xlsx Sales              # 加载名为 "Sales" 的工作表
+  load data/sales.xlsx 0                  # 加载第一个工作表（索引 0）
+  load data/sales.xlsx 1 my_view          # 加载第二个工作表，命名为 "my_view"
+  sheets data/sales.xlsx                  # 查看文件的所有工作表
+  drop sales                              # 删除名为 "sales" 的视图
+  drop all                                # 删除所有视图（需确认）
+
+SQL 查询示例:
+  SELECT * FROM my_view LIMIT 10
+  SELECT COUNT(*) FROM my_view
+  SELECT column1, SUM(column2) FROM my_view GROUP BY column1
+
+导出功能:
+  - 执行 SQL 查询后会自动预览结果
+  - 系统会询问是否需要导出
+  - 可以选择默认路径或自定义路径
+  - 默认文件名格式: ret_YYYYMMDD_HHMM.xlsx
+
+提示:
+  - 首先使用 'load' 命令加载 Excel 文件
+  - 然后使用 SQL 查询数据
+  - 查询后可使用 'export' 命令导出结果
+  - 视图名称默认为文件名（不含扩展名）
+  - 不再需要的视图可以使用 'drop' 命令删除以释放内存
+    """)
+
+
+def execute_query(query: str, file_path: str, sheet_name: str = "Sheet1", view_name: str = None):
+    """执行单个 SQL 查询并支持导出"""
+    with ExcelProcessor() as processor:
+        # 加载文件
+        processor.load_excel(file_path, sheet_name, view_name)
+        
+        # 执行查询、预览并支持导出
+        processor.query_and_export(query, file_path)
+
+
+def main():
+    """主函数"""
+    parser = argparse.ArgumentParser(
+        description="Spark Excel Processor - 使用 PySpark SQL 处理 Excel 文件",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  python main.py demo                          运行演示
+  python main.py interactive                   交互式模式
+  python main.py query -f data.xlsx -q "SELECT * FROM data LIMIT 10"
+
+导出功能:
+  query 命令会自动预览查询结果并询问是否导出
+  默认导出到源 Excel 文件同级目录，文件名格式: ret_YYYYMMDD_HHMM.xlsx
+        """
+    )
+    
+    subparsers = parser.add_subparsers(dest='command', help='可用命令')
+    
+    # demo 命令
+    subparsers.add_parser('demo', help='运行演示示例')
+    
+    # interactive 命令
+    subparsers.add_parser('interactive', help='交互式模式')
+    subparsers.add_parser('i', help='交互式模式（简写）')
+    
+    # query 命令
+    query_parser = subparsers.add_parser('query', help='执行 SQL 查询')
+    query_parser.add_argument('-f', '--file', required=True, help='Excel 文件路径')
+    query_parser.add_argument('-s', '--sheet', default='Sheet1', help='工作表名称')
+    query_parser.add_argument('-v', '--view', help='视图名称')
+    query_parser.add_argument('-q', '--query', required=True, help='SQL 查询语句')
+    
+    args = parser.parse_args()
+    
+    if args.command == 'demo':
+        run_demo()
+    elif args.command in ['interactive', 'i']:
+        interactive_mode()
+    elif args.command == 'query':
+        execute_query(args.query, args.file, args.sheet, args.view)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
