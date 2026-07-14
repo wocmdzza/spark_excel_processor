@@ -15,6 +15,8 @@
 - ✅ 交互式导出路径选择（支持默认路径和自定义路径）
 - ✅ 结果集缓存优化（避免导出时重复执行查询）
 - ✅ 自动管理缓存生命周期（导出完成后自动释放）
+- ✅ 支持注册自定义 UDF（Python 函数和 Java JAR 包）
+- ✅ 支持 Pandas UDF（向量化 UDF，性能更高）
 
 ## 系统要求
 
@@ -238,6 +240,102 @@ uv run python main.py interactive
 > drop all                         # 删除所有视图
 ```
 
+### 6. 自定义 UDF
+
+#### 注册 Python UDF
+
+```python
+from spark_excel_processor import ExcelProcessor
+
+# 定义 Python 函数
+def double_it(x):
+    return x * 2
+
+def calculate_tax(amount, rate=0.1):
+    return amount * rate
+
+with ExcelProcessor() as processor:
+    # 加载数据
+    processor.load_excel("data/sales.xlsx", "Sales", "sales")
+    
+    # 注册普通 UDF
+    processor.register_python_udf("double_it", double_it, "integer")
+    
+    # 注册带默认参数的 UDF
+    processor.register_python_udf("calculate_tax", calculate_tax, "double")
+    
+    # 使用 UDF 查询
+    processor.show("SELECT product, amount, double_it(amount) as doubled FROM sales")
+    processor.show("SELECT product, amount, calculate_tax(amount) as tax FROM sales")
+```
+
+#### 注册 Pandas UDF（向量化，性能更高）
+
+```python
+import pandas as pd
+from pyspark.sql.types import LongType
+
+# 定义 Pandas UDF 函数
+def pandas_double(series: pd.Series) -> pd.Series:
+    return series * 2
+
+with ExcelProcessor() as processor:
+    processor.load_excel("data/sales.xlsx", "Sales", "sales")
+    
+    # 注册 Pandas UDF
+    processor.register_python_udf("pandas_double", pandas_double, LongType(), is_pandas_udf=True)
+    
+    # 使用 Pandas UDF
+    processor.show("SELECT product, amount, pandas_double(amount) as doubled FROM sales")
+```
+
+#### 注册 Java UDF
+
+```python
+with ExcelProcessor() as processor:
+    processor.load_excel("data/sales.xlsx", "Sales", "sales")
+    
+    # 注册 Java UDF（需要 JAR 文件）
+    processor.register_java_udf(
+        name="java_upper",
+        java_class="com.example.StringUpperUDF",
+        jar_path="/path/to/udf.jar",
+        return_type="string"
+    )
+    
+    # 使用 Java UDF
+    processor.show("SELECT java_upper(product) as upper_product FROM sales")
+```
+
+#### 管理 UDF
+
+```python
+with ExcelProcessor() as processor:
+    # 列出所有已注册的 UDF
+    processor.print_udfs()
+    
+    # 获取 UDF 字典
+    udfs = processor.list_udfs()
+    
+    # 注销指定 UDF
+    processor.unregister_udf("double_it")
+    
+    # 注销所有 UDF
+    processor.unregister_all_udfs()
+```
+
+#### 交互式模式中的 UDF 命令
+
+```bash
+uv run python main.py interactive
+> register-python-udf double_it double_it integer          # 注册 Python UDF
+> register-python-udf pandas_udf my_func string pandas     # 注册 Pandas UDF
+> register-java-udf java_udf com.example.MyUDF /path.jar   # 注册 Java UDF
+> udfs                                                      # 列出已注册 UDF
+> unregister-udf double_it                                  # 注销指定 UDF
+> unregister-all-udfs                                       # 注销所有 UDF
+```
+
 ## API 参考
 
 ### ExcelProcessor 类
@@ -393,6 +491,77 @@ processor.drop_all_views()  # 删除所有视图
 
 关闭 Spark 会话。
 
+##### `register_python_udf(name, func, return_type, is_pandas_udf)`
+
+注册 Python 函数为 UDF。
+
+**参数:**
+- `name` (str): UDF 名称（在 SQL 中使用的函数名）
+- `func` (Callable): Python 函数
+- `return_type` (str | DataType): 返回类型（如 "string", "integer", "double" 或 Spark DataType）
+- `is_pandas_udf` (bool): 是否为 Pandas UDF（向量化 UDF，性能更高），默认为 False
+
+**返回:** 注册的 UDF 名称
+
+**示例:**
+```python
+def double_it(x):
+    return x * 2
+
+# 普通 UDF
+processor.register_python_udf("double_it", double_it, "integer")
+
+# Pandas UDF
+processor.register_python_udf("pandas_udf", my_func, "string", is_pandas_udf=True)
+```
+
+##### `register_java_udf(name, java_class, jar_path, return_type)`
+
+注册 Java JAR 中的 UDF。
+
+**参数:**
+- `name` (str): UDF 名称（在 SQL 中使用的函数名）
+- `java_class` (str): Java 类的完整限定名（如 "com.example.MyUDF"）
+- `jar_path` (str, optional): JAR 文件路径（可选，如果已添加到 classpath 则不需要）
+- `return_type` (str | DataType, optional): 返回类型（可选，默认为 StringType）
+
+**返回:** 注册的 UDF 名称
+
+**示例:**
+```python
+processor.register_java_udf(
+    name="java_udf",
+    java_class="com.example.MyUDF",
+    jar_path="/path/to/udf.jar",
+    return_type="string"
+)
+```
+
+##### `list_udfs()`
+
+列出所有已注册的自定义 UDF。
+
+**返回:** UDF 字典，键为 UDF 名称，值为 UDF 信息
+
+##### `print_udfs()`
+
+打印所有已注册的 UDF 信息。
+
+##### `unregister_udf(name)`
+
+注销指定的 UDF。
+
+**参数:**
+- `name` (str): UDF 名称
+
+**返回:** bool 是否注销成功
+
+##### `unregister_all_udfs()`
+
+注销所有自定义 UDF。
+
+**返回:** 成功注销的 UDF 数量
+
 ## 项目结构
 
 ```
@@ -513,6 +682,36 @@ SELECT
 FROM sales
 ```
 
+### 使用自定义 UDF
+
+```sql
+-- 使用注册的 Python UDF
+SELECT 
+    product,
+    amount,
+    double_it(amount) as doubled_amount,
+    calculate_tax(amount, 0.13) as tax
+FROM sales
+
+-- 使用 Pandas UDF
+SELECT 
+    product,
+    amount,
+    pandas_double(amount) as doubled
+FROM sales
+
+-- 在聚合中使用 UDF
+SELECT 
+    category,
+    SUM(double_it(amount)) as total_doubled
+FROM sales
+GROUP BY category
+
+-- 在条件中使用 UDF
+SELECT * FROM sales
+WHERE calculate_tax(amount) > 100
+```
+
 ## 注意事项
 
 1. **内存管理**: 处理大文件时注意 Spark 内存配置
@@ -523,6 +722,11 @@ FROM sales
    - 查询结果会自动缓存，导出时不会重复执行查询
    - 缓存在以下情况自动释放：导出完成后、用户取消导出、关闭处理器
    - 处理大数据集时注意内存使用，缓存会占用内存空间
+6. **UDF 使用**:
+   - Python UDF 性能较低，大数据量建议使用 Pandas UDF
+   - Java UDF 需要确保 JAR 文件路径正确且类名完整
+   - UDF 名称会自动转换为小写，避免使用特殊字符
+   - Pandas UDF 需要正确指定输入输出类型
 
 ## 故障排除
 
@@ -546,6 +750,15 @@ processor.load_excel("file.xlsx", infer_schema=False)
 
 **Q: 中文乱码问题**
 A: 确保 Excel 文件编码正确，PySpark 通常能自动处理 UTF-8编码。
+
+**Q: 注册 Python UDF 时找不到函数**
+A: 确保函数在当前会话中已定义，交互式模式下函数需要在注册前定义。
+
+**Q: Java UDF 注册失败**
+A: 检查 JAR 文件路径是否正确，类名是否完整（包括包名）。
+
+**Q: Pandas UDF 类型错误**
+A: 确保函数的输入输出类型与注册时指定的类型匹配，使用正确的 Pandas 类型。
 
 ## 许可证
 
