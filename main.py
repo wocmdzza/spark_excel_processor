@@ -93,6 +93,56 @@ def interactive_mode():
                         processor.unregister_all_udfs()
                     continue
                 
+                # 执行 Python 代码
+                if user_input.lower().startswith('exec'):
+                    code = user_input[4:].strip()
+                    if not code:
+                        print("用法: exec <python_code>")
+                        print("示例: exec def double_it(x): return x * 2")
+                        continue
+                    try:
+                        exec(code, globals())
+                        print("✓ 代码执行成功")
+                    except Exception as e:
+                        print(f"执行错误: {e}")
+                    continue
+                
+                # 从文件加载函数
+                if user_input.lower().startswith('load-udf'):
+                    parts = user_input.split()
+                    if len(parts) < 3:
+                        print("用法: load-udf <file_path> <function_name> [alias]")
+                        print("示例: load-udf my_module.py my_func")
+                        print("      load-udf my_module.py my_func double_it")
+                        continue
+                    
+                    file_path = parts[1]
+                    func_name = parts[2]
+                    alias = parts[3] if len(parts) > 3 else func_name
+                    
+                    if not os.path.exists(file_path):
+                        print(f"错误: 文件不存在: {file_path}")
+                        continue
+                    
+                    try:
+                        import importlib.util
+                        spec = importlib.util.spec_from_file_location("temp_module", file_path)
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+                        
+                        func = getattr(module, func_name, None)
+                        if func is None:
+                            print(f"错误: 在文件 '{file_path}' 中找不到函数 '{func_name}'")
+                            continue
+                        
+                        # 将函数添加到全局命名空间
+                        globals()[alias] = func
+                        print(f"✓ 已加载函数: {func_name} -> {alias}")
+                        print("现在可以使用 register-python-udf 命令注册此函数")
+                    except Exception as e:
+                        print(f"加载错误: {e}")
+                    continue
+                
                 # 删除视图
                 if user_input.lower().startswith('drop'):
                     parts = user_input.split()
@@ -289,6 +339,8 @@ def print_help():
   drop <view_name>                                     删除指定视图
   drop all                                             删除所有视图
   export                                               导出上一次查询结果
+  exec <python_code>                                   执行 Python 代码
+  load-udf <file_path> <func_name> [alias]             从文件加载函数
   udfs                                                 列出所有已注册的 UDF
   register-python-udf <name> <func> <type> [pandas]    注册 Python UDF
   register-java-udf <name> <class> [jar] [type]        注册 Java UDF
@@ -311,6 +363,26 @@ load 命令说明:
   drop sales                              # 删除名为 "sales" 的视图
   drop all                                # 删除所有视图（需确认）
 
+exec 命令说明:
+  执行 Python 代码，可用于定义 UDF 函数
+  
+  示例:
+    exec def double_it(x): return x * 2
+    exec def calculate_tax(amount, rate=0.1): return amount * rate
+    exec import math; def sqrt(x): return math.sqrt(x)
+
+load-udf 命令说明:
+  从 Python 文件加载函数到当前会话
+  
+  file_path: Python 文件路径
+  func_name: 函数名称
+  alias: 可选，函数别名（默认使用原函数名）
+  
+  示例:
+    load-udf my_module.py my_func
+    load-udf my_module.py my_func double_it
+    load-udf /path/to/utils.py calculate_tax tax
+
 UDF 命令说明:
   register-python-udf: 注册 Python 函数为 UDF
     name: UDF 名称（SQL 中使用的函数名）
@@ -325,9 +397,7 @@ UDF 命令说明:
     type: 返回类型（可选，默认 string）
 
   示例:
-    def double_it(x):
-        return x * 2
-
+    exec def double_it(x): return x * 2
     register-python-udf double_it double_it integer
     register-python-udf my_pandas_udf my_func string pandas
     register-java-udf java_udf com.example.MyUDF /path/to/udf.jar string
@@ -352,6 +422,7 @@ SQL 查询示例:
   - 查询后可使用 'export' 命令导出结果
   - 视图名称默认为文件名（不含扩展名）
   - 不再需要的视图可以使用 'drop' 命令删除以释放内存
+  - 可以使用 'exec' 或 'load-udf' 定义函数，然后注册为 UDF
   - 可以注册自定义 UDF 扩展 SQL 函数能力
     """)
 
