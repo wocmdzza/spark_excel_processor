@@ -81,6 +81,18 @@ def interactive_mode():
                     print(f"已加载的视图: {processor.get_view_names()}")
                     continue
                 
+                # 列出已注册的 UDF
+                if user_input.lower() == 'udfs':
+                    processor.print_udfs()
+                    continue
+                
+                # 注销所有 UDF
+                if user_input.lower().startswith('unregister-all-udfs'):
+                    confirm = input("确认注销所有 UDF? (y/n): ").strip().lower()
+                    if confirm in ['y', 'yes', '是']:
+                        processor.unregister_all_udfs()
+                    continue
+                
                 # 删除视图
                 if user_input.lower().startswith('drop'):
                     parts = user_input.split()
@@ -99,6 +111,63 @@ def interactive_mode():
                     
                     view_name = parts[1]
                     processor.drop_view(view_name)
+                    continue
+                
+                # 注销指定 UDF
+                if user_input.lower().startswith('unregister-udf'):
+                    parts = user_input.split()
+                    if len(parts) < 2:
+                        print("用法: unregister-udf <udf_name>")
+                        continue
+                    processor.unregister_udf(parts[1])
+                    continue
+                
+                # 注册 Python UDF
+                if user_input.lower().startswith('register-python-udf'):
+                    parts = user_input.split()
+                    if len(parts) < 4:
+                        print("用法: register-python-udf <name> <function_name> <return_type> [pandas]")
+                        print("示例: register-python-udf double_it double_it integer")
+                        print("      register-python-udf double_it double_it integer pandas")
+                        continue
+                    
+                    udf_name = parts[1]
+                    func_name = parts[2]
+                    return_type = parts[3]
+                    is_pandas = len(parts) > 4 and parts[4].lower() == 'pandas'
+                    
+                    # 从全局/本地变量获取函数
+                    import __main__
+                    func = getattr(__main__, func_name, None)
+                    if func is None:
+                        print(f"错误: 找不到函数 '{func_name}'")
+                        print("请确保函数已定义在当前会话中")
+                        continue
+                    
+                    try:
+                        processor.register_python_udf(udf_name, func, return_type, is_pandas)
+                    except Exception as e:
+                        print(f"注册失败: {e}")
+                    continue
+                
+                # 注册 Java UDF
+                if user_input.lower().startswith('register-java-udf'):
+                    parts = user_input.split()
+                    if len(parts) < 3:
+                        print("用法: register-java-udf <name> <java_class> [jar_path] [return_type]")
+                        print("示例: register-java-udf my_udf com.example.MyUDF")
+                        print("      register-java-udf my_udf com.example.MyUDF /path/to/udf.jar string")
+                        continue
+                    
+                    udf_name = parts[1]
+                    java_class = parts[2]
+                    jar_path = parts[3] if len(parts) > 3 and parts[3].endswith('.jar') else None
+                    return_type = parts[4] if len(parts) > 4 else None
+                    
+                    try:
+                        processor.register_java_udf(udf_name, java_class, jar_path, return_type)
+                    except Exception as e:
+                        print(f"注册失败: {e}")
                     continue
                 
                 # 导出上一次查询结果
@@ -220,6 +289,11 @@ def print_help():
   drop <view_name>                                     删除指定视图
   drop all                                             删除所有视图
   export                                               导出上一次查询结果
+  udfs                                                 列出所有已注册的 UDF
+  register-python-udf <name> <func> <type> [pandas]    注册 Python UDF
+  register-java-udf <name> <class> [jar] [type]        注册 Java UDF
+  unregister-udf <name>                                注销指定 UDF
+  unregister-all-udfs                                  注销所有 UDF
   help                                                 显示此帮助信息
   quit/exit                                            退出程序
 
@@ -237,10 +311,34 @@ load 命令说明:
   drop sales                              # 删除名为 "sales" 的视图
   drop all                                # 删除所有视图（需确认）
 
+UDF 命令说明:
+  register-python-udf: 注册 Python 函数为 UDF
+    name: UDF 名称（SQL 中使用的函数名）
+    func: Python 函数名（需已在当前会话中定义）
+    type: 返回类型（string, integer, double 等）
+    pandas: 可选，使用 Pandas UDF 提升性能
+
+  register-java-udf: 注册 Java JAR 中的 UDF
+    name: UDF 名称（SQL 中使用的函数名）
+    class: Java 类的完整限定名
+    jar: JAR 文件路径（可选）
+    type: 返回类型（可选，默认 string）
+
+  示例:
+    def double_it(x):
+        return x * 2
+
+    register-python-udf double_it double_it integer
+    register-python-udf my_pandas_udf my_func string pandas
+    register-java-udf java_udf com.example.MyUDF /path/to/udf.jar string
+    unregister-udf double_it
+    udfs                                    # 查看已注册的 UDF
+
 SQL 查询示例:
   SELECT * FROM my_view LIMIT 10
   SELECT COUNT(*) FROM my_view
   SELECT column1, SUM(column2) FROM my_view GROUP BY column1
+  SELECT double_it(amount) FROM my_view   # 使用注册的 UDF
 
 导出功能:
   - 执行 SQL 查询后会自动预览结果
@@ -254,6 +352,7 @@ SQL 查询示例:
   - 查询后可使用 'export' 命令导出结果
   - 视图名称默认为文件名（不含扩展名）
   - 不再需要的视图可以使用 'drop' 命令删除以释放内存
+  - 可以注册自定义 UDF 扩展 SQL 函数能力
     """)
 
 

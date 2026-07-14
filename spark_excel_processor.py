@@ -1,5 +1,5 @@
 """
-Spark Excel Processor -使用 PySpark SQL 处理 Excel 文件
+Spark Excel Processor - 使用 PySpark SQL 处理 Excel 文件
 
 支持功能：
 - 读取单个或多个 Excel 文件
@@ -7,16 +7,24 @@ Spark Excel Processor -使用 PySpark SQL 处理 Excel 文件
 - 创建临时视图供 Spark SQL 查询
 - 支持链式查询和数据分析
 - 支持查询结果预览和导出
+- 支持注册自定义 UDF（Python 函数和 Java JAR）
 """
 
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional, Union, Any
+from typing import List, Dict, Optional, Union, Any, Callable
+from enum import Enum
 
 import pandas as pd
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.types import StructType
+from pyspark.sql.types import StructType, DataType
+
+
+class UDFType(Enum):
+    """UDF 类型枚举"""
+    PYTHON = "python"
+    JAVA = "java"
 
 
 class ExcelProcessor:
@@ -43,6 +51,7 @@ class ExcelProcessor:
         self._loaded_views: Dict[str, DataFrame] = {}
         self._cached_result: Optional[DataFrame] = None
         self._cached_sql: Optional[str] = None
+        self._registered_udfs: Dict[str, Dict[str, Any]] = {}
         
         print(f"Spark Excel Processor 已初始化")
         print(f"Spark版本: {self.spark.version}")
@@ -486,6 +495,215 @@ class ExcelProcessor:
         if sanitized and sanitized[0].isdigit():
             sanitized = '_' + sanitized
         return sanitized.lower()
+    
+    def register_python_udf(
+        self,
+        name: str,
+        func: Callable,
+        return_type: Union[str, DataType],
+        is_pandas_udf: bool = False
+    ) -> str:
+        """
+        注册 Python 函数为 UDF
+        
+        Args:
+            name: UDF 名称（在 SQL 中使用的函数名）
+            func: Python 函数
+            return_type: 返回类型（如 "string", "integer", "double" 或 Spark DataType）
+            is_pandas_udf: 是否为 Pandas UDF（向量化 UDF，性能更高）
+            
+        Returns:
+            注册的 UDF 名称
+            
+        示例:
+            def double_it(x):
+                return x * 2
+            
+            processor.register_python_udf("double_it", double_it, "integer")
+            processor.show("SELECT double_it(amount) FROM sales")
+        """
+        udf_name = self._sanitize_view_name(name)
+        
+        try:
+            if isinstance(return_type, str):
+                from pyspark.sql.types import _parse_datatype_string
+                spark_return_type = _parse_datatype_string(return_type)
+            else:
+                spark_return_type = return_type
+            
+            if is_pandas_udf:
+                from pyspark.sql.functions import pandas_udf
+                registered_func = pandas_udf(func, spark_return_type)
+                self.spark.udf.register(udf_name, registered_func)
+            else:
+                from pyspark.sql.functions import udf as spark_udf
+                registered_func = spark_udf(func, spark_return_type)
+                self.spark.udf.register(udf_name, registered_func)
+            
+            self._registered_udfs[udf_name] = {
+                "type": UDFType.PYTHON,
+                "function": func,
+                "return_type": str(return_type),
+                "is_pandas_udf": is_pandas_udf
+            }
+            
+            print(f"✓ 已注册 Python UDF: {udf_name}")
+            print(f"  返回类型: {return_type}")
+            print(f"  Pandas UDF: {is_pandas_udf}")
+            
+            return udf_name
+            
+        except Exception as e:
+            print(f"注册 Python UDF 失败: {e}")
+            raise
+    
+    def register_java_udf(
+        self,
+        name: str,
+        java_class: str,
+        jar_path: Optional[str] = None,
+        return_type: Optional[Union[str, DataType]] = None
+    ) -> str:
+        """
+        注册 Java JAR 中的 UDF
+        
+        Args:
+            name: UDF 名称（在 SQL 中使用的函数名）
+            java_class: Java 类的完整限定名（如 "com.example.MyUDF"）
+            jar_path: JAR 文件路径（可选，如果已添加到 classpath 则不需要）
+            return_type: 返回类型（可选，默认为 StringType）
+            
+        Returns:
+            注册的 UDF 名称
+            
+        示例:
+            processor.register_java_udf(
+                "my_java_udf",
+                "com.example.MyUDF",
+                "/path/to/udf.jar",
+                "string"
+            )
+            processor.show("SELECT my_java_udf(name) FROM sales")
+        """
+        udf_name = self._sanitize_view_name(name)
+        
+        try:
+            if jar_path:
+                if not os.path.exists(jar_path):
+                    raise FileNotFoundError(f"JAR 文件不存在: {jar_path}")
+                self.spark.sparkContext.addJar(jar_path)
+                print(f"  已添加 JAR: {jar_path}")
+            
+            if return_type is not None:
+                if isinstance(return_type, str):
+                    from pyspark.sql.types import _parse_datatype_string
+                    spark_return_type = _parse_datatype_string(return_type)
+                else:
+                    spark_return_type = return_type
+            else:
+                from pyspark.sql.types import StringType
+                spark_return_type = StringType()
+            
+            self.spark.udf.registerJavaFunction(udf_name, java_class, spark_return_type)
+            
+            self._registered_udfs[udf_name] = {
+                "type": UDFType.JAVA,
+                "java_class": java_class,
+                "jar_path": jar_path,
+                "return_type": str(spark_return_type)
+            }
+            
+            print(f"✓ 已注册 Java UDF: {udf_name}")
+            print(f"  Java 类: {java_class}")
+            if jar_path:
+                print(f"  JAR 路径: {jar_path}")
+            print(f"  返回类型: {spark_return_type}")
+            
+            return udf_name
+            
+        except Exception as e:
+            print(f"注册 Java UDF 失败: {e}")
+            raise
+    
+    def list_udfs(self) -> Dict[str, Dict[str, Any]]:
+        """
+        列出所有已注册的自定义 UDF
+        
+        Returns:
+            UDF 字典，键为 UDF 名称，值为 UDF 信息
+        """
+        return self._registered_udfs.copy()
+    
+    def print_udfs(self) -> None:
+        """打印所有已注册的 UDF 信息"""
+        if not self._registered_udfs:
+            print("没有已注册的自定义 UDF")
+            return
+        
+        print("\n已注册的自定义 UDF:")
+        print("-" * 60)
+        
+        for name, info in self._registered_udfs.items():
+            udf_type = info["type"]
+            print(f"\n  名称: {name}")
+            print(f"  类型: {udf_type.value}")
+            
+            if udf_type == UDFType.PYTHON:
+                print(f"  函数: {info['function'].__name__}")
+                print(f"  Pandas UDF: {info['is_pandas_udf']}")
+            else:
+                print(f"  Java 类: {info['java_class']}")
+                if info.get('jar_path'):
+                    print(f"  JAR 路径: {info['jar_path']}")
+            
+            print(f"  返回类型: {info['return_type']}")
+        
+        print("-" * 60)
+        print(f"共 {len(self._registered_udfs)} 个 UDF")
+    
+    def unregister_udf(self, name: str) -> bool:
+        """
+        注销指定的 UDF
+        
+        Args:
+            name: UDF 名称
+            
+        Returns:
+            是否注销成功
+        """
+        udf_name = self._sanitize_view_name(name)
+        
+        if udf_name not in self._registered_udfs:
+            print(f"UDF '{udf_name}' 不存在")
+            return False
+        
+        try:
+            self.spark.udf.unregister(udf_name)
+            del self._registered_udfs[udf_name]
+            
+            print(f"✓ 已注销 UDF: {udf_name}")
+            return True
+            
+        except Exception as e:
+            print(f"注销 UDF 失败: {e}")
+            return False
+    
+    def unregister_all_udfs(self) -> int:
+        """
+        注销所有自定义 UDF
+        
+        Returns:
+            成功注销的 UDF 数量
+        """
+        udf_names = list(self._registered_udfs.keys())
+        unregistered_count = 0
+        
+        for udf_name in udf_names:
+            if self.unregister_udf(udf_name):
+                unregistered_count += 1
+        
+        print(f"\n共注销 {unregistered_count}/{len(udf_names)} 个 UDF")
+        return unregistered_count
     
     def close(self) -> None:
         """关闭 Spark 会话"""
