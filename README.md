@@ -328,9 +328,17 @@ with ExcelProcessor() as processor:
 
 ```bash
 uv run python main.py interactive
+
+# 定义函数（两种方式）
+> exec def double_it(x): return x * 2                    # 直接定义函数
+> load-udf my_module.py calculate_tax tax                 # 从文件加载函数
+
+# 注册 UDF
 > register-python-udf double_it double_it integer          # 注册 Python UDF
 > register-python-udf pandas_udf my_func string pandas     # 注册 Pandas UDF
 > register-java-udf java_udf com.example.MyUDF /path.jar   # 注册 Java UDF
+
+# 管理 UDF
 > udfs                                                      # 列出已注册 UDF
 > unregister-udf double_it                                  # 注销指定 UDF
 > unregister-all-udfs                                       # 注销所有 UDF
